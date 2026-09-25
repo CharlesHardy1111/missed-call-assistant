@@ -80,7 +80,7 @@ class AppTests(unittest.TestCase):
         response = self.client.post("/voice/incoming")
         self.assertEqual(response.mimetype, "text/xml")
         dial = ElementTree.fromstring(response.data).find("Dial")
-        self.assertEqual(dial.attrib, {"action": "/voice/dial-result", "method": "POST", "timeout": "20"})
+        self.assertEqual(dial.attrib, {"action": "/voice/dial-result", "method": "POST", "timeout": "10"})
         self.assertEqual(dial.find("Number").text, "+15555550100")
         self.assertEqual(dial.find("Number").attrib, {
             "statusCallback": "/voice/dial-result",
