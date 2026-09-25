@@ -1,5 +1,6 @@
 import sqlite3
 from datetime import datetime
+from contextlib import closing
 from flask import current_app, has_app_context
 
 DB_NAME = "missed_calls.db"
@@ -75,8 +76,10 @@ def add_missed_call(
     phone_number,
     caller_name="Unknown Caller",
     call_status="no-answer",
-    external_call_id=None
+    external_call_id=None,
+    deduplicate=False,
 ):
+    """Insert a lead; return None when deduplication skips an existing call ID."""
     follow_up_message = (
         "Hi! Sorry we missed your call. "
         "We received your message and someone will get back to you shortly. "
@@ -87,38 +90,43 @@ def add_missed_call(
         "%b %d, %Y %I:%M %p"
     )
 
-    conn = get_connection()
-    cursor = conn.cursor()
+    # Serialize check + insert for the two independently delivered voice callbacks.
+    # BEGIN IMMEDIATE works across Gunicorn workers and needs no schema migration.
+    with closing(get_connection()) as conn, conn:
+        cursor = conn.cursor()
+        if deduplicate and external_call_id:
+            cursor.execute("BEGIN IMMEDIATE")
+            cursor.execute(
+                "SELECT id FROM missed_calls WHERE external_call_id = ? LIMIT 1",
+                (external_call_id,),
+            )
+            if cursor.fetchone() is not None:
+                return None
 
-    cursor.execute("""
-        INSERT INTO missed_calls (
+        cursor.execute("""
+            INSERT INTO missed_calls (
+                phone_number,
+                caller_name,
+                time_received,
+                status,
+                follow_up_status,
+                follow_up_message,
+                call_status,
+                external_call_id
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
             phone_number,
             caller_name,
             time_received,
-            status,
-            follow_up_status,
+            "missed",
+            "pending",
             follow_up_message,
             call_status,
             external_call_id
-        )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    """, (
-        phone_number,
-        caller_name,
-        time_received,
-        "missed",
-        "pending",
-        follow_up_message,
-        call_status,
-        external_call_id
-    ))
+        ))
 
-    call_id = cursor.lastrowid
-
-    conn.commit()
-    conn.close()
-
-    return call_id
+        return cursor.lastrowid
 
 
 def get_calls():
