@@ -1,11 +1,13 @@
 import sqlite3
 from datetime import datetime
+from flask import current_app, has_app_context
 
 DB_NAME = "missed_calls.db"
 
 
 def get_connection():
-    conn = sqlite3.connect(DB_NAME)
+    path = current_app.config["DATABASE_PATH"] if has_app_context() else DB_NAME
+    conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     return conn
 

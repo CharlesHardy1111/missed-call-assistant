@@ -68,6 +68,7 @@
         Turn missed calls into recoverable leads.
     </div>
 
+    {% if config.ENABLE_DEV_ROUTES %}
     <div class="test-box">
 
         <h2>Simulate a Missed Call</h2>
@@ -89,6 +90,8 @@
         </button>
 
     </div>
+
+    {% endif %}
 
     <h2>Missed Calls</h2>
 
@@ -141,6 +144,7 @@
     {% endif %}
 
 
+    {% if config.ENABLE_DEV_ROUTES %}
     <script>
 
         async function simulateCall() {
@@ -182,6 +186,7 @@
         }
 
     </script>
+    {% endif %}
 
 </body>
 </html>
