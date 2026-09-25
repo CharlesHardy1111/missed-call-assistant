@@ -3,6 +3,8 @@ from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
+from threading import Barrier
 from xml.etree import ElementTree
 
 # app:app initializes on import; isolate that database too.
@@ -80,6 +82,11 @@ class AppTests(unittest.TestCase):
         dial = ElementTree.fromstring(response.data).find("Dial")
         self.assertEqual(dial.attrib, {"action": "/voice/dial-result", "method": "POST", "timeout": "20"})
         self.assertEqual(dial.find("Number").text, "+15555550100")
+        self.assertEqual(dial.find("Number").attrib, {
+            "statusCallback": "/voice/dial-result",
+            "statusCallbackMethod": "POST",
+            "statusCallbackEvent": "completed",
+        })
         self.app.config["BUSINESS_PHONE"] = "123&456"
         self.assertEqual(ElementTree.fromstring(self.client.post("/voice/incoming").data).find("Dial/Number").text, "123&456")
         self.app.config["BUSINESS_PHONE"] = None
@@ -105,6 +112,93 @@ class AppTests(unittest.TestCase):
         response = self.client.post("/provider/call-status", data={"From": "123", "CallStatus": "completed"})
         self.assertEqual(response.json["call_status"], "answered")
         self.assertEqual(self.calls()[0]["caller_name"], "Incoming Caller")
+
+    def test_number_no_answer_callback_alone_reaches_dashboard(self):
+        # Follow the callback URL from the actual incoming TwiML. No Dial action
+        # is delivered in this scenario; the child leg must still create a lead.
+        incoming = self.client.post("/voice/incoming", data={
+            "From": "+15555550101", "CallSid": "parent",
+        })
+        number = ElementTree.fromstring(incoming.data).find("Dial/Number")
+        self.assertEqual(self.calls(), [])
+        with self.assertLogs(self.app.logger, level="INFO") as logs:
+            response = self.client.post(number.attrib["statusCallback"], data={
+                "From": "+15555550101", "To": "+15555550100",
+                "CallSid": "child-private-id", "ParentCallSid": "parent-private-id",
+                "CallStatus": "no-answer", "Direction": "outbound-dial",
+            })
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(list(ElementTree.fromstring(response.data)), [])
+        row = self.calls()[0]
+        self.assertEqual(row["phone_number"], "+15555550101")
+        self.assertEqual(row["external_call_id"], "parent-private-id")
+        self.assertEqual(row["call_status"], "no-answer")
+        self.assertEqual(row["follow_up_status"], "pending")
+        page = self.client.get("/").data
+        self.assertIn(b"+15555550101", page)
+        self.assertNotIn(b"No missed calls yet", page)
+        output = " ".join(logs.output)
+        self.assertIn("outcome=recorded", output)
+        for private in ("+15555550101", "+15555550100", "parent-private-id", "child-private-id"):
+            self.assertNotIn(private, output)
+
+    def test_action_and_number_callback_deduplicate_in_either_order(self):
+        for reverse in (False, True):
+            parent = f"parent-{reverse}"
+            payloads = [
+                {"From": "123", "CallSid": parent, "DialCallSid": "child",
+                 "CallStatus": "in-progress", "DialCallStatus": "no-answer"},
+                {"From": "123", "CallSid": "child", "ParentCallSid": parent,
+                 "CallStatus": "no-answer"},
+            ]
+            if reverse:
+                payloads.reverse()
+            for payload in payloads * 2:
+                self.assertEqual(self.client.post("/voice/dial-result", data=payload).status_code, 200)
+        self.assertEqual(len(self.calls()), 2)
+
+    def test_number_callback_statuses_and_parent_validation(self):
+        for status in ("no-answer", "busy", "failed", "canceled"):
+            payload = {"From": "123", "CallSid": f"child-{status}", "CallStatus": status}
+            self.assertEqual(self.client.post("/voice/dial-result", data=payload).status_code, 400)
+            payload["ParentCallSid"] = status
+            self.assertEqual(self.client.post("/voice/dial-result", data=payload).status_code, 200)
+        for status in ("completed", "answered", "in-progress", "ringing", ""):
+            response = self.client.post("/voice/dial-result", data={
+                "From": "123", "CallSid": "child", "ParentCallSid": "answered-parent",
+                "CallStatus": status,
+            })
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(list(ElementTree.fromstring(response.data)), [])
+        self.assertEqual(len(self.calls()), 4)
+
+    def test_action_no_answer_uses_dial_status_not_parent_status(self):
+        incoming = self.client.post("/voice/incoming")
+        dial = ElementTree.fromstring(incoming.data).find("Dial")
+        response = self.client.post(dial.attrib["action"], data={
+            "From": "+15555550101", "CallSid": "parent", "DialCallSid": "child",
+            "CallStatus": "completed", "DialCallStatus": "no-answer",
+        })
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNotNone(ElementTree.fromstring(response.data).find("Say"))
+        self.assertEqual(self.calls()[0]["external_call_id"], "parent")
+        self.assertIn(b"+15555550101", self.client.get("/").data)
+
+    def test_simultaneous_voice_callbacks_create_one_lead(self):
+        barrier = Barrier(2)
+        payloads = [
+            {"From": "123", "CallSid": "parent", "DialCallStatus": "no-answer"},
+            {"From": "123", "CallSid": "child", "ParentCallSid": "parent", "CallStatus": "no-answer"},
+        ]
+
+        def post(payload):
+            with self.app.test_client() as client:
+                barrier.wait(timeout=5)
+                return client.post("/voice/dial-result", data=payload).status_code
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            self.assertEqual(list(pool.map(post, payloads)), [200, 200])
+        self.assertEqual(len(self.calls()), 1)
 
     def test_legacy_database_migration_preserves_rows(self):
         legacy = str(Path(self.temp.name) / "legacy.db")

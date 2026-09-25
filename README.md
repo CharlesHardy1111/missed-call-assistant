@@ -34,6 +34,16 @@ Production routes remain:
 
 Twilio should continue posting incoming voice calls to `/voice/incoming`. The
 `Dial` action still posts to `/voice/dial-result`, with a 20-second timeout.
+The nested `Number` also posts its terminal event to `/voice/dial-result` using
+`statusCallbackEvent="completed"`. That event includes unsuccessful final statuses
+such as `no-answer`; it does not mean the forwarded call was answered.
+The action sends `DialCallStatus` with the parent `CallSid`; the number callback
+sends `CallStatus` with `ParentCallSid`. Both record against the parent ID in a
+serialized SQLite transaction, so either callback can record the lead without
+duplicating it when the other callback or a retry arrives. Number status callbacks
+return empty TwiML; the action retains the existing spoken apology. No URL query
+parameters contain caller details, and logs contain only callback source, missed
+status, and recorded/duplicate outcome.
 `no-answer`, `busy`, `failed`, and `canceled` create missed-call records; answered
 and other statuses do not. Missed dial outcomes retain the existing spoken apology.
 Repeated external call IDs are ignored. Missing IDs retain the existing behavior
@@ -52,7 +62,30 @@ Run `python -m unittest discover -s tests -v`. Tests use temporary SQLite files,
 including during app import, and make no Twilio requests. They cover missed and
 answered statuses, sequential duplicate callbacks across endpoints, validation,
 TwiML forwarding and responses, development route isolation, templates, and
-non-destructive legacy schema migration. GitHub Actions runs the same suite.
+non-destructive legacy schema migration. They also follow the generated callback
+URLs through to the dashboard, test number-only reporting, both callback orders,
+concurrent voice callbacks, and privacy-safe logging. GitHub Actions runs the same suite.
+
+## Diagnosing missing dial results
+
+The original code already specified a valid relative `Dial action` URL and handled
+`DialCallStatus=no-answer`. The identified reporting gap was no independent
+`Number statusCallback` subscription and no handling of its `CallStatus` /
+`ParentCallSid` payload. A no-answer child leg in Twilio's console alone does not
+prove that a callback reached this app. This fix closes that gap; the cause of a
+particular live callback failure still needs Twilio request/response evidence.
+
+After deploying, verify that the Twilio number's incoming POST reaches this app's
+`/voice/incoming` and the returned TwiML includes both callbacks. Leave a test
+forwarded call unanswered, check the child status callback and action HTTP results,
+then confirm one lead appears. If callbacks return 404, check the deployed revision
+and webhook target; for 5xx check application/database errors. Successful callbacks
+with an empty dashboard require checking that both use the same persistent database.
+Forwarding through a separate TwiML Bin or Studio flow will bypass this code.
+Voicemail answering the forwarded leg is a completed call, not a no-answer result.
+
+Protocol references: [Twilio Dial action](https://www.twilio.com/docs/voice/twiml/dial#action)
+and [Number status callbacks](https://www.twilio.com/docs/voice/twiml/number#statuscallbackevent).
 
 ## Audit findings and remaining risks
 
@@ -61,8 +94,9 @@ non-destructive legacy schema migration. GitHub Actions runs the same suite.
 - Provider/voice webhooks still lack Twilio signature validation, and `/call-event`
   has no authentication. Authentication requires a coordinated configuration
   change to avoid interrupting existing callers; it is not silently enabled here.
-- Duplicate checks remain a read followed by an insert, so simultaneous callbacks
-  can race. There is no unique constraint; existing duplicates are not deleted.
+- Voice result callbacks serialize their duplicate check and insert. The generic
+  event and provider endpoints still use separate checks and can race. There is
+  no unique constraint; existing duplicates are not deleted.
 - SQLite durability depends on the deployed disk. This change does not provision
   storage, migrate to PostgreSQL, or verify the live Render configuration.
 - Policy text is moved verbatim and describes SMS capabilities/STOP/HELP that

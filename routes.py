@@ -162,7 +162,7 @@ def voice_incoming():
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Dial action="/voice/dial-result" method="POST" timeout="20">
-        <Number>{escape(current_app.config["BUSINESS_PHONE"] or "")}</Number>
+        <Number statusCallback="/voice/dial-result" statusCallbackMethod="POST" statusCallbackEvent="completed">{escape(current_app.config["BUSINESS_PHONE"] or "")}</Number>
     </Dial>
 </Response>"""
 
@@ -177,26 +177,41 @@ def voice_dial_result():
 
     phone_number = request.form.get("From")
 
-    dial_status = (
-        request.form.get("DialCallStatus") or ""
-    ).lower()
-
-    call_sid = request.form.get("CallSid")
-
+    # Dial's action describes the parent call; Number's asynchronous callback
+    # describes the child leg. Both must use the parent ID for deduplication.
+    is_action = "DialCallStatus" in request.form
+    dial_status = (request.form.get(
+        "DialCallStatus" if is_action else "CallStatus"
+    ) or "").strip().lower()
+    call_sid = request.form.get("CallSid" if is_action else "ParentCallSid")
+    if not is_action and dial_status in MISSED_STATUSES and not call_sid:
+        current_app.logger.warning("Dial status callback rejected: missing parent ID")
+        return Response("ParentCallSid is required for a dial status callback.", status=400)
 
     if dial_status in MISSED_STATUSES and not phone_number:
+        current_app.logger.warning("Dial result rejected: missing caller")
         return Response("Caller phone number missing.", status=400)
 
     if dial_status in MISSED_STATUSES:
 
-        if not call_already_exists(call_sid):
+        call_id = add_missed_call(
+            phone_number=phone_number,
+            caller_name="Incoming Caller",
+            call_status=dial_status,
+            external_call_id=call_sid,
+            deduplicate=True,
+        )
+        # No phone numbers, SIDs, request bodies, or credentials in logs.
+        current_app.logger.info(
+            "Dial result source=%s status=%s outcome=%s",
+            "action" if is_action else "number-status",
+            dial_status,
+            "recorded" if call_id is not None else "duplicate",
+        )
 
-            add_missed_call(
-                phone_number=phone_number,
-                caller_name="Incoming Caller",
-                call_status=dial_status,
-                external_call_id=call_sid
-            )
+    # Async status responses do not control the call. Keep the existing apology
+    # only for the synchronous action response, which Twilio executes as TwiML.
+    if is_action and dial_status in MISSED_STATUSES:
 
         twiml = """<?xml version="1.0" encoding="UTF-8"?>
 <Response>
