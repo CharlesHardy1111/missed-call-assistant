@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <title>Missed Call Assistant</title>
+
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 40px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }
+
+        h1 {
+            margin-bottom: 5px;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+        }
+
+        .test-box,
+        .call-card {
+            background: white;
+            padding: 20px;
+            margin-bottom: 20px;
+            border-radius: 10px;
+            border: 1px solid #ddd;
+        }
+
+        input {
+            padding: 10px;
+            margin: 5px;
+            width: 220px;
+        }
+
+        button {
+            padding: 11px 18px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+        }
+
+        .status {
+            font-weight: bold;
+        }
+
+        .message {
+            background: #f0f0f0;
+            padding: 12px;
+            border-radius: 6px;
+            margin-top: 10px;
+        }
+    </style>
+</head>
+
+<body>
+
+    <h1>Missed Call Assistant</h1>
+
+    <div class="subtitle">
+        Turn missed calls into recoverable leads.
+    </div>
+
+    <div class="test-box">
+
+        <h2>Simulate a Missed Call</h2>
+
+        <input
+            id="callerName"
+            type="text"
+            placeholder="Customer name"
+        >
+
+        <input
+            id="phoneNumber"
+            type="text"
+            placeholder="Phone number"
+        >
+
+        <button onclick="simulateCall()">
+            Simulate Missed Call
+        </button>
+
+    </div>
+
+    <h2>Missed Calls</h2>
+
+    {% if calls %}
+
+        {% for call in calls %}
+
+            <div class="call-card">
+
+                <h3>
+                    {{ call["caller_name"] }}
+                </h3>
+
+                <p>
+                    {{ call["phone_number"] }}
+                </p>
+
+                <p>
+                    {{ call["time_received"] }}
+                </p>
+
+                <p class="status">
+                    Status: {{ call["status"] }}
+                </p>
+
+                <p>
+                    Follow-up: {{ call["follow_up_status"] }}
+                </p>
+
+                <div class="message">
+
+                    <strong>Generated response:</strong>
+
+                    <br><br>
+
+                    {{ call["follow_up_message"] }}
+
+                </div>
+
+            </div>
+
+        {% endfor %}
+
+    {% else %}
+
+        <p>
+            No missed calls yet.
+        </p>
+
+    {% endif %}
+
+
+    <script>
+
+        async function simulateCall() {
+
+            const callerName =
+                document.getElementById("callerName").value;
+
+            const phoneNumber =
+                document.getElementById("phoneNumber").value;
+
+            if (!phoneNumber) {
+                alert("Enter a phone number first.");
+                return;
+            }
+
+            const response = await fetch("/missed-call", {
+
+                method: "POST",
+
+                headers: {
+                    "Content-Type": "application/json"
+                },
+
+                body: JSON.stringify({
+                    caller_name: callerName,
+                    phone_number: phoneNumber
+                })
+
+            });
+
+            const result = await response.json();
+
+            if (result.success) {
+                location.reload();
+            } else {
+                alert(result.error);
+            }
+
+        }
+
+    </script>
+
+</body>
+</html>

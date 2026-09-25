@@ -1,0 +1,8 @@
+.env
+__pycache__/
+*.pyc
+.env
+missed_calls.db
+__pycache__/
+*.pyc
+.vscode/
