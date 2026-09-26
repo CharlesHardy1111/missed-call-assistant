@@ -161,7 +161,7 @@ def voice_incoming():
 
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Dial action="/voice/dial-result" method="POST" timeout="10">
+    <Dial action="/voice/dial-result" method="POST" timeout="20">
         <Number statusCallback="/voice/dial-result" statusCallbackMethod="POST" statusCallbackEvent="completed">{escape(current_app.config["BUSINESS_PHONE"] or "")}</Number>
     </Dial>
 </Response>"""
