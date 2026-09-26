@@ -14,6 +14,10 @@ def create_app(test_config=None):
         BUSINESS_PHONE=os.getenv("BUSINESS_PHONE"),
         DATABASE_PATH=os.getenv("DATABASE_PATH", "missed_calls.db"),
         ENABLE_DEV_ROUTES=os.getenv("ENABLE_DEV_ROUTES", "").lower() == "true",
+        ENABLE_SMS_FOLLOWUP=os.getenv("ENABLE_SMS_FOLLOWUP", "false").strip().lower() == "true",
+        TWILIO_ACCOUNT_SID=os.getenv("TWILIO_ACCOUNT_SID", ""),
+        TWILIO_AUTH_TOKEN=os.getenv("TWILIO_AUTH_TOKEN", ""),
+        TWILIO_SMS_FROM=os.getenv("TWILIO_SMS_FROM", ""),
     )
     if test_config is not None:
         app.config.update(test_config)
