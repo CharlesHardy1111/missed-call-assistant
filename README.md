@@ -1,7 +1,8 @@
 # Missed Call Assistant
 
 Flask dashboard and inbound Twilio voice callbacks backed by SQLite. Missed calls
-create pending follow-up records with draft text. **No outbound SMS is sent.**
+create a lead and run an SMS follow-up workflow. **Real SMS is disabled by default**
+and must not be enabled without explicit approval.
 
 ## Run locally
 
@@ -47,7 +48,8 @@ status, and recorded/duplicate outcome.
 `no-answer`, `busy`, `failed`, and `canceled` create missed-call records; answered
 and other statuses do not. Missed dial outcomes retain the existing spoken apology.
 Repeated external call IDs are ignored. Missing IDs retain the existing behavior
-of allowing separate records. A missing forwarding number now returns 503 instead
+of allowing separate records, but those records cannot send SMS without a stable
+call ID. A missing forwarding number returns 503 instead
 of emitting a `None` destination; a missed dial callback missing `From` returns 400
 instead of failing a database constraint.
 
@@ -55,6 +57,179 @@ SQLite still defaults to `missed_calls.db` in the working directory; existing
 tables and the additive legacy migration are preserved. `DATABASE_PATH` optionally
 selects a different file, including a provisioned persistent disk location. Its
 parent directory must exist. Back up existing data before changing the path.
+
+## SMS follow-up milestone
+
+This branch starts at `d9c2f13`, the merged 20-second timeout repair identified as
+deployed. The `/voice/incoming` function, Dial timeout, forwarding destination,
+business-number environment configuration, and Render entry point are unchanged.
+
+All production missed-call entry points use one workflow. The two Twilio dial
+callbacks and provider callback use the parent call ID; generic events use
+`external_call_id`. The existing missed-call row is the lead: one row per identified
+call, not one row per phone number. A distinct future missed call can create a new
+lead. A retry reuses the existing row and never repeats a completed send attempt.
+
+The default message is:
+
+> Hi, sorry we missed your call. We'll get back to you shortly. How can we help?
+
+| Environment variable | Default / purpose |
+| --- | --- |
+| `ENABLE_SMS_FOLLOWUP` | `false`; only explicit `true` enables the transport |
+| `TWILIO_ACCOUNT_SID` | Empty; Twilio account SID, supplied through secret configuration |
+| `TWILIO_AUTH_TOKEN` | Empty; Twilio auth token, supplied through secret configuration |
+| `TWILIO_SMS_FROM` | Empty; SMS-capable Twilio sender in E.164 format |
+
+`TWILIO_SMS_FROM` is separate from `BUSINESS_PHONE`; do not change the latter.
+No credentials are needed for the automated or disabled-mode manual tests.
+The simulator never sends, even if the feature flag is true. Production events
+without a stable ID are also not sent, because retries cannot be deduplicated safely.
+
+| Stored status | Dashboard meaning |
+| --- | --- |
+| `disabled` | Not attempted / disabled |
+| `not_attempted` | Legacy row, simulator, or missing call ID; no send |
+| `pending` | New row not yet claimed by the workflow |
+| `sending` | Attempt claimed; outcome not yet confirmed |
+| `sent` | Twilio accepted the send request; delivery unconfirmed |
+| `failed` | Request rejected, configuration invalid, or outcome uncertain |
+
+The SMS REST request uses Python's standard library, Basic authentication over
+HTTPS, a five-second socket timeout, no automatic retries, and no redirects.
+The workflow stores the provider message SID/status, UTC attempt/completion times,
+a fixed safe error category, and an optional numeric provider error code. Raw
+provider errors, credentials, and request bodies are never logged or stored.
+`sent` measures successful submission in this milestone, not carrier delivery.
+Twilio normally returns `queued` initially. Delivery receipts and asynchronous
+delivery failures are not ingested yet. See the [Twilio Message resource](https://www.twilio.com/docs/messaging/api/message-resource).
+
+SQLite serializes both lead creation and the follow-up claim. The claim commits
+before network I/O; no database lock is held during the send. Disabled, failed,
+sent, and already-claimed rows are never automatically retried. If a process stops
+after claiming or Twilio accepts a request but the response is lost, the outcome
+may need manual reconciliation in Twilio. Do not reset a `sending`/uncertain record
+to pending without checking whether Twilio already accepted it. This favors avoiding
+duplicate texts over automatic recovery; it is not an exactly-once delivery guarantee.
+An interrupted pending row can resume on a webhook retry before it has been claimed.
+
+Migration adds nullable lifecycle columns, preserves existing records, and marks
+legacy pending rows `not_attempted` to prevent a historical SMS backlog. It updates
+only the old default unsent message wording; historical sent/custom text is preserved.
+Enabling the flag later does not send previously disabled records.
+
+The send currently runs inside the callback request with a bounded socket timeout.
+Transport failures are recorded and the existing voice TwiML response is retained.
+A database failure can still cause a webhook error; a committed send claim prevents
+that error's retry from producing another text. A durable worker queue and delivery
+reconciliation are follow-up work, not part of this milestone.
+
+## Safe local verification (no real SMS)
+
+From the repository in PowerShell:
+
+```powershell
+$env:ENABLE_SMS_FOLLOWUP = 'false'
+& .\.venv\Scripts\python.exe -m unittest discover -s tests -v
+```
+
+The suite uses dummy credentials and mocked sends; tests of the enabled path also
+block the real transport. It exercises sent and failed dashboard states offline.
+
+To inspect the disabled state manually, start a local server with a separate file:
+
+```powershell
+$env:ENABLE_SMS_FOLLOWUP = 'false'
+$env:DATABASE_PATH = 'missed_calls_sms_test.db'
+$env:TWILIO_AUTH_TOKEN = 'local-dummy-token'
+$env:TWILIO_WEBHOOK_BASE_URL = 'http://127.0.0.1:5000'
+& .\.venv\Scripts\python.exe app.py
+```
+
+In a second PowerShell terminal in this repository, send a signed callback using
+the same dummy token (never use that dummy token on a public deployment):
+
+```powershell
+@'
+from urllib.parse import urlencode
+from urllib.request import Request, urlopen
+from twilio.request_validator import RequestValidator
+url = 'http://127.0.0.1:5000/voice/dial-result'
+data = {'From': '+15555550101', 'CallSid': 'safe-local-demo-001', 'DialCallStatus': 'no-answer'}
+signature = RequestValidator('local-dummy-token').compute_signature(url, data)
+request = Request(url, data=urlencode(data).encode(), headers={
+    'Content-Type': 'application/x-www-form-urlencoded',
+    'X-Twilio-Signature': signature,
+})
+with urlopen(request, timeout=10) as response:
+    print('HTTP', response.status)
+'@ | & .\.venv\Scripts\python.exe -
+```
+
+Open `http://127.0.0.1:5000/`: expect one lead, the new message, and
+**Not attempted / disabled**. Repeat the identical POST: still one lead and no SMS.
+Use a new dummy CallSid for a separate simulated call. Stop the server with Ctrl+C;
+these shell variables do not edit `.env` or Render settings.
+
+Before an explicitly approved real-send test, supply the three Twilio variables
+privately, verify the sender has SMS capability and the account permits the intended
+recipient/destination (trial accounts require a verified recipient), and confirm
+the sender's required messaging registration/opt-out setup. No voice webhook changes
+are required. Configure the webhook authentication described below before rollout.
+Keep `ENABLE_SMS_FOLLOWUP=false` until approval; no real-send validation
+or production deployment has been performed by this milestone.
+
+## Webhook authentication
+
+An application-level request hook authenticates these endpoints **before** their
+handlers run: `/voice/incoming`, `/voice/dial-result`, `/provider/call-status`, and
+the optional `/voice/trial-test`. It uses the official pinned Twilio Python SDK's
+`RequestValidator` to verify `X-Twilio-Signature` against the complete external URL
+and every form parameter, including repeated values. These callbacks accept only
+`application/x-www-form-urlencoded`; JSON is rejected instead of being validated
+as an empty form. This does not alter the incoming TwiML or 20-second timeout.
+
+Authentication configuration:
+
+| Variable | Purpose |
+| --- | --- |
+| `TWILIO_AUTH_TOKEN` | Existing auth token of the account sending the webhook; required even when SMS is disabled |
+| `TWILIO_WEBHOOK_BASE_URL` | Exact public HTTPS origin used by Twilio, e.g. `https://your-service.onrender.com`; no path, query, or credentials |
+| `CALL_EVENT_TOKEN` | Independent secret for the non-Twilio `/call-event` integration; leave unset if unused |
+
+The configured origin is combined with the endpoint path and unchanged query
+string. It is deliberately independent of `Host`, `Forwarded`, and
+`X-Forwarded-*` headers, so Render's internal HTTP connection doesn't invalidate
+signatures for public HTTPS URLs and callers cannot choose the validation origin.
+Use the actual custom domain if Twilio calls a custom domain. Path-prefix proxy
+rewrites and multiple webhook origins are not supported by this configuration.
+Trailing origin `/` is allowed. HTTP is allowed only for a configured localhost
+or loopback origin, and signatures remain mandatory there.
+
+Missing token or missing/invalid origin returns 503 and does not run the handler.
+Missing/invalid signatures return 403; signed unsupported content types return 415.
+No request body, authentication header, token, or computed signature is logged.
+There is no disabling flag and no `TESTING`, debugger, or development-route bypass.
+The tests use dummy tokens and sign their requests; security tests independently
+construct HMAC-SHA1 signatures and use an ordinary unsigned Flask test client.
+All SMS tests continue blocking real transport calls.
+
+`/call-event` accepts generic JSON/form events, not Twilio's payload format. It now
+requires `Authorization: Bearer <CALL_EVENT_TOKEN>` using constant-time comparison.
+Unset token returns 503; incorrect/missing authorization returns 403. Existing
+integrations must add that header before rollout. This closes the alternate path
+that otherwise could still create leads and invoke SMS without Twilio authentication.
+The optional `/missed-call` simulator stays development-only and cannot send SMS.
+
+**Future Render rollout:** set the existing account auth token and exact public
+origin in Render's environment before deploying this change. Keep
+`ENABLE_SMS_FOLLOWUP=false` and `ENABLE_DEV_ROUTES=false`; configure the separate
+generic-event token only if needed. No live settings or credentials have been
+changed. Twilio already signs webhooks, so no Twilio signature switch or new
+production credentials are required. Verify a real signed call after an approved
+deployment; deploying without the required environment will reject live callbacks.
+
+Reference: [Twilio request validation](https://www.twilio.com/docs/usage/security).
 
 ## Tests
 
@@ -64,7 +239,9 @@ answered statuses, sequential duplicate callbacks across endpoints, validation,
 TwiML forwarding and responses, development route isolation, templates, and
 non-destructive legacy schema migration. They also follow the generated callback
 URLs through to the dashboard, test number-only reporting, both callback orders,
-concurrent voice callbacks, and privacy-safe logging. GitHub Actions runs the same suite.
+concurrent voice callbacks, and privacy-safe logging. Follow-up tests cover the
+safety switch, mocked sends, rejection/timeouts, retries/concurrency, restart/crash
+behavior, migration, and dashboard statuses. GitHub Actions runs the same suite.
 
 ## Diagnosing missing dial results
 
@@ -91,17 +268,20 @@ and [Number status callbacks](https://www.twilio.com/docs/voice/twiml/number#sta
 
 - The dashboard still has no authentication and displays caller information.
   Access control needs a separate rollout before exposing sensitive call data.
-- Provider/voice webhooks still lack Twilio signature validation, and `/call-event`
-  has no authentication. Authentication requires a coordinated configuration
-  change to avoid interrupting existing callers; it is not silently enabled here.
-- Voice result callbacks serialize their duplicate check and insert. The generic
-  event and provider endpoints still use separate checks and can race. There is
-  no unique constraint; existing duplicates are not deleted.
+- Signatures authenticate payloads, but do not provide a timestamp or replay
+  expiration. Existing call-ID deduplication and persisted send claims prevent
+  duplicate follow-ups for identified calls; retain persistent database storage.
+- HTTPS, secret storage/rotation, and rate limiting remain operational responsibilities.
+  Anyone possessing the account auth token can sign a request. Dashboard access
+  control and inbound SMS/opt-out handling are separate work.
+- All production entry points now use the serialized duplicate check and follow-up
+  claim. Direct database writers can bypass this contract; existing duplicates are
+  not deleted. Events without IDs preserve record creation but cannot send SMS.
 - SQLite durability depends on the deployed disk. This change does not provision
   storage, migrate to PostgreSQL, or verify the live Render configuration.
-- Policy text is moved verbatim and describes SMS capabilities/STOP/HELP that
-  are not implemented yet. Review it before launching messaging; this cleanup
-  does not implement SMS or revise policy commitments.
+- Existing policy text describes STOP/HELP capabilities. Inbound SMS/HELP handling
+  is not implemented by this milestone; confirm opt-out behavior and policy wording
+  before launching messaging.
 - Caller phone/SID debug prints were removed. `.env` variants, virtual environments,
   databases and SQLite sidecars are ignored. `.env.example` contains a dummy number.
   If credentials were ever exposed elsewhere, ignoring files does not rotate them.

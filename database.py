@@ -1,7 +1,8 @@
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timezone
 from contextlib import closing
 from flask import current_app, has_app_context
+from sms import DEFAULT_MESSAGE
 
 DB_NAME = "missed_calls.db"
 
@@ -14,41 +15,60 @@ def get_connection():
 
 
 def init_db():
-    conn = get_connection()
-    cursor = conn.cursor()
+    with closing(get_connection()) as conn, conn:
+        cursor = conn.cursor()
+        cursor.execute("BEGIN IMMEDIATE")
 
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS missed_calls (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            phone_number TEXT NOT NULL,
-            caller_name TEXT,
-            time_received TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'missed',
-            follow_up_status TEXT NOT NULL DEFAULT 'pending',
-            follow_up_message TEXT NOT NULL
-        )
-    """)
-
-    # Upgrade an existing Stage 1 database without deleting anything.
-    cursor.execute("PRAGMA table_info(missed_calls)")
-    existing_columns = {
-        row["name"] for row in cursor.fetchall()
-    }
-
-    if "call_status" not in existing_columns:
         cursor.execute("""
-            ALTER TABLE missed_calls
-            ADD COLUMN call_status TEXT
+            CREATE TABLE IF NOT EXISTS missed_calls (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                phone_number TEXT NOT NULL,
+                caller_name TEXT,
+                time_received TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'missed',
+                follow_up_status TEXT NOT NULL DEFAULT 'pending',
+                follow_up_message TEXT NOT NULL
+            )
         """)
 
-    if "external_call_id" not in existing_columns:
-        cursor.execute("""
-            ALTER TABLE missed_calls
-            ADD COLUMN external_call_id TEXT
-        """)
+        # Upgrade an existing Stage 1 database without deleting anything.
+        cursor.execute("PRAGMA table_info(missed_calls)")
+        existing_columns = {
+            row["name"] for row in cursor.fetchall()
+        }
 
-    conn.commit()
-    conn.close()
+        if "call_status" not in existing_columns:
+            cursor.execute("""
+                ALTER TABLE missed_calls
+                ADD COLUMN call_status TEXT
+            """)
+
+        if "external_call_id" not in existing_columns:
+            cursor.execute("""
+                ALTER TABLE missed_calls
+                ADD COLUMN external_call_id TEXT
+            """)
+
+        # Additive lifecycle migration; old pending rows must never become a send backlog.
+        lifecycle_columns = {
+            "follow_up_attempted_at": "TEXT",
+            "follow_up_completed_at": "TEXT",
+            "follow_up_error": "TEXT",
+            "follow_up_error_code": "TEXT",
+            "follow_up_message_sid": "TEXT",
+            "follow_up_provider_status": "TEXT",
+        }
+        for name, sql_type in lifecycle_columns.items():
+            if name not in existing_columns:
+                cursor.execute(f"ALTER TABLE missed_calls ADD COLUMN {name} {sql_type}")
+        if "follow_up_attempted_at" not in existing_columns:
+            cursor.execute("UPDATE missed_calls SET follow_up_status = 'not_attempted' WHERE follow_up_status = 'pending'")
+        cursor.execute("""
+            UPDATE missed_calls SET follow_up_message = ?
+            WHERE follow_up_status IN ('pending', 'not_attempted', 'disabled')
+            AND follow_up_message = ?
+        """, (DEFAULT_MESSAGE, "Hi! Sorry we missed your call. We received your message and someone will get back to you shortly. How can we help?"))
+
 
 
 def call_already_exists(external_call_id):
@@ -80,11 +100,7 @@ def add_missed_call(
     deduplicate=False,
 ):
     """Insert a lead; return None when deduplication skips an existing call ID."""
-    follow_up_message = (
-        "Hi! Sorry we missed your call. "
-        "We received your message and someone will get back to you shortly. "
-        "How can we help?"
-    )
+    follow_up_message = DEFAULT_MESSAGE
 
     time_received = datetime.now().strftime(
         "%b %d, %Y %I:%M %p"
@@ -144,3 +160,42 @@ def get_calls():
     conn.close()
 
     return calls
+
+
+def get_call_by_external_id(external_call_id):
+    with closing(get_connection()) as conn:
+        return conn.execute(
+            "SELECT * FROM missed_calls WHERE external_call_id = ? ORDER BY id LIMIT 1",
+            (external_call_id,),
+        ).fetchone()
+
+
+def claim_follow_up(call_id, enabled, skip_reason=None):
+    """Commit an exclusive claim BEFORE any network I/O; never reclaim attempts."""
+    with closing(get_connection()) as conn, conn:
+        conn.execute("BEGIN IMMEDIATE")
+        row = conn.execute("SELECT * FROM missed_calls WHERE id = ?", (call_id,)).fetchone()
+        if row is None or row["follow_up_status"] != "pending":
+            return None
+        if not enabled or skip_reason:
+            conn.execute(
+                "UPDATE missed_calls SET follow_up_status = ?, follow_up_error = ? WHERE id = ?",
+                ("disabled" if not enabled else "not_attempted", skip_reason, call_id),
+            )
+            return None
+        conn.execute(
+            "UPDATE missed_calls SET follow_up_status = 'sending', follow_up_attempted_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc).isoformat(), call_id),
+        )
+        return row
+
+
+def finish_follow_up(call_id, result):
+    with closing(get_connection()) as conn, conn:
+        conn.execute("""
+            UPDATE missed_calls SET follow_up_status = ?, follow_up_completed_at = ?,
+                follow_up_message_sid = ?, follow_up_provider_status = ?,
+                follow_up_error = ?, follow_up_error_code = ?
+            WHERE id = ? AND follow_up_status = 'sending'
+        """, (result.status, datetime.now(timezone.utc).isoformat(), result.message_sid,
+              result.provider_status, result.error, result.error_code, call_id))
