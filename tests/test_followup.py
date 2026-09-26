@@ -135,10 +135,10 @@ class FollowUpTests(unittest.TestCase):
 
     def test_missing_configuration_and_invalid_recipient_fail_without_network(self):
         self.app.config["ENABLE_SMS_FOLLOWUP"] = True
-        self.app.config["TWILIO_AUTH_TOKEN"] = ""
+        self.app.config["TWILIO_SMS_FROM"] = ""
         self.post()
         self.assertEqual(self.calls()[0]["follow_up_error"], "configuration_missing")
-        self.app.config["TWILIO_AUTH_TOKEN"] = "fake"
+        self.app.config["TWILIO_SMS_FROM"] = "+15555550102"
         self.client.post("/voice/dial-result", data={"From": "anonymous", "CallSid": "other", "DialCallStatus": "busy"})
         self.assertEqual(self.calls()[0]["follow_up_error"], "invalid_recipient")
         self.open.assert_not_called()

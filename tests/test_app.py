@@ -12,8 +12,13 @@ _import_db = tempfile.TemporaryDirectory()
 os.environ["DATABASE_PATH"] = str(Path(_import_db.name) / "import.db")
 os.environ["ENABLE_DEV_ROUTES"] = "false"
 os.environ["ENABLE_SMS_FOLLOWUP"] = "false"
-from app import app as deployed_app, create_app
+from app import app as deployed_app, create_app as flask_create_app
+from signed_client import signed_app
 from database import get_calls, init_db
+
+
+def create_app(config):
+    return signed_app(flask_create_app, config)
 
 
 class AppTests(unittest.TestCase):
