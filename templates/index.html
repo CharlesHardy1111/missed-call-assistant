@@ -118,12 +118,23 @@
                 </p>
 
                 <p>
-                    Follow-up: {{ call["follow_up_status"] }}
+                    Follow-up: {{ {
+                        'sent': 'Sent (accepted by Twilio; delivery unconfirmed)',
+                        'failed': 'Failed',
+                        'disabled': 'Not attempted / disabled',
+                        'not_attempted': 'Not attempted',
+                        'pending': 'Not attempted / pending',
+                        'sending': 'Sending / outcome not yet confirmed'
+                    }.get(call['follow_up_status'], 'Not attempted') }}
                 </p>
+
+                {% if call['follow_up_error'] %}
+                <p>{{ follow_up_errors.get(call['follow_up_error'], 'Follow-up needs review.') }}</p>
+                {% endif %}
 
                 <div class="message">
 
-                    <strong>Generated response:</strong>
+                    <strong>Follow-up message:</strong>
 
                     <br><br>
 

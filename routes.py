@@ -2,7 +2,9 @@ from xml.sax.saxutils import escape
 
 from flask import Blueprint, Response, current_app, jsonify, render_template, request
 
-from database import add_missed_call, call_already_exists, get_calls
+from database import get_calls
+from followup import record_missed_call
+from sms import SAFE_ERRORS
 from events import MISSED_STATUSES, event_data
 
 production = Blueprint("production", __name__)
@@ -13,7 +15,8 @@ def index():
     calls = get_calls()
     return render_template(
         "index.html",
-        calls=calls
+        calls=calls,
+        follow_up_errors=SAFE_ERRORS,
     )
 
 
@@ -62,11 +65,14 @@ def call_event():
 
     # Prevent the same telephone event
     # from creating duplicate leads.
-    if (
-        external_call_id
-        and call_already_exists(external_call_id)
-    ):
+    call_id = record_missed_call(
+        phone_number=phone_number,
+        caller_name=caller_name,
+        call_status=call_status,
+        external_call_id=external_call_id
+    )
 
+    if call_id is None:
         return jsonify({
             "success": True,
             "recorded": False,
@@ -75,13 +81,6 @@ def call_event():
                 "This call event was already recorded."
             )
         }), 200
-
-    call_id = add_missed_call(
-        phone_number=phone_number,
-        caller_name=caller_name,
-        call_status=call_status,
-        external_call_id=external_call_id
-    )
 
     return jsonify({
         "success": True,
@@ -100,7 +99,7 @@ def provider_call_status():
         request.form.get("CallStatus") or ""
     ).lower()
 
-    external_call_id = request.form.get("CallSid")
+    external_call_id = request.form.get("ParentCallSid") or request.form.get("CallSid")
 
     status_map = {
         "completed": "answered",
@@ -126,23 +125,20 @@ def provider_call_status():
             "message": "Call was not missed."
         }), 200
 
-    if (
-        external_call_id
-        and call_already_exists(external_call_id)
-    ):
+    call_id = record_missed_call(
+        phone_number=phone_number,
+        caller_name="Incoming Caller",
+        call_status=call_status,
+        external_call_id=external_call_id
+    )
+
+    if call_id is None:
         return jsonify({
             "success": True,
             "recorded": False,
             "duplicate": True,
             "message": "Call already recorded."
         }), 200
-
-    call_id = add_missed_call(
-        phone_number=phone_number,
-        caller_name="Incoming Caller",
-        call_status=call_status,
-        external_call_id=external_call_id
-    )
 
     return jsonify({
         "success": True,
@@ -194,12 +190,11 @@ def voice_dial_result():
 
     if dial_status in MISSED_STATUSES:
 
-        call_id = add_missed_call(
+        call_id = record_missed_call(
             phone_number=phone_number,
             caller_name="Incoming Caller",
             call_status=dial_status,
             external_call_id=call_sid,
-            deduplicate=True,
         )
         # No phone numbers, SIDs, request bodies, or credentials in logs.
         current_app.logger.info(

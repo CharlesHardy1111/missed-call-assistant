@@ -11,8 +11,14 @@ from xml.etree import ElementTree
 _import_db = tempfile.TemporaryDirectory()
 os.environ["DATABASE_PATH"] = str(Path(_import_db.name) / "import.db")
 os.environ["ENABLE_DEV_ROUTES"] = "false"
-from app import app as deployed_app, create_app
+os.environ["ENABLE_SMS_FOLLOWUP"] = "false"
+from app import app as deployed_app, create_app as flask_create_app
+from signed_client import signed_app
 from database import get_calls, init_db
+
+
+def create_app(config):
+    return signed_app(flask_create_app, config)
 
 
 class AppTests(unittest.TestCase):
@@ -24,6 +30,7 @@ class AppTests(unittest.TestCase):
             "DATABASE_PATH": str(Path(self.temp.name) / "calls.db"),
             "BUSINESS_PHONE": "+15555550100",
             "ENABLE_DEV_ROUTES": False,
+            "ENABLE_SMS_FOLLOWUP": False,
         })
         self.client = self.app.test_client()
 
@@ -57,7 +64,7 @@ class AppTests(unittest.TestCase):
             self.assertEqual(response.status_code, 201)
             self.assertTrue(self.client.post("/call-event", data=payload).json["duplicate"])
         self.assertEqual(len(self.calls()), 4)
-        self.assertTrue(all(row["follow_up_status"] == "pending" for row in self.calls()))
+        self.assertTrue(all(row["follow_up_status"] == "disabled" for row in self.calls()))
 
     def test_answered_and_intermediate_events_do_not_create_leads(self):
         for status in ("completed", "in-progress", "ringing", "answered", "unknown"):
@@ -133,7 +140,7 @@ class AppTests(unittest.TestCase):
         self.assertEqual(row["phone_number"], "+15555550101")
         self.assertEqual(row["external_call_id"], "parent-private-id")
         self.assertEqual(row["call_status"], "no-answer")
-        self.assertEqual(row["follow_up_status"], "pending")
+        self.assertEqual(row["follow_up_status"], "disabled")
         page = self.client.get("/").data
         self.assertIn(b"+15555550101", page)
         self.assertNotIn(b"No missed calls yet", page)

@@ -1,7 +1,7 @@
 """Optional local simulator and Twilio trial diagnostic routes."""
 from flask import Blueprint, Response, jsonify
 
-from database import add_missed_call
+from followup import record_missed_call
 from events import event_data
 
 development = Blueprint("development", __name__)
@@ -24,10 +24,11 @@ def missed_call():
             "error": "phone_number is required"
         }), 400
 
-    call_id = add_missed_call(
+    call_id = record_missed_call(
         phone_number=phone_number,
         caller_name=caller_name,
-        call_status="no-answer"
+        call_status="no-answer",
+        allow_sms=False,
     )
 
     return jsonify({
