@@ -9,10 +9,11 @@ from sms import SendResult, send_sms
 
 def record_missed_call(phone_number, caller_name="Unknown Caller",
                        call_status="no-answer", external_call_id=None,
-                       allow_sms=True):
+                       allow_sms=True, call_event_at=None):
     """Return a new lead ID, or None for a retry of the same telephone event."""
     call_id = add_missed_call(phone_number, caller_name, call_status,
-                              external_call_id, deduplicate=True)
+                              external_call_id, deduplicate=True,
+                              call_event_at=call_event_at)
     existing = get_call_by_external_id(external_call_id) if call_id is None else None
     target_id = call_id if call_id is not None else existing["id"]
     enabled = current_app.config.get("ENABLE_SMS_FOLLOWUP") is True

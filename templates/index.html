@@ -110,7 +110,12 @@
                 </p>
 
                 <p>
-                    {{ call["time_received"] }}
+                    {{ call['time_label'] }}:
+                    {% if call['display_time']['utc'] %}
+                    <time datetime="{{ call['display_time']['utc'] }}">{{ call['display_time']['text'] }}</time>
+                    {% else %}
+                    {{ call['display_time']['text'] }}
+                    {% endif %}
                 </p>
 
                 <p class="status">

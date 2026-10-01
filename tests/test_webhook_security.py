@@ -115,6 +115,57 @@ class WebhookSecurityTests(unittest.TestCase):
         self.assertEqual(self.client.post(path, data=data, headers=headers).status_code, 403)
         self.assertEqual(self.calls(), [])
 
+    def test_render_public_url_preserves_forwarding_and_callback_query(self):
+        origin = 'https://missed-call-assistant.onrender.com'
+        self.app.config['TWILIO_WEBHOOK_BASE_URL'] = origin
+
+        def post(path, data):
+            return self.client.post(path, data=data, base_url='http://internal:10000', headers={
+                'X-Twilio-Signature': signature(origin + path, data),
+                'X-Forwarded-Proto': 'https',
+                'X-Forwarded-Host': 'missed-call-assistant.onrender.com',
+                'User-Agent': 'TwilioProxy/1.0',
+            })
+
+        response = post('/voice/incoming', self.payloads()['/voice/incoming'])
+        self.assertEqual(response.status_code, 200)
+        dial = ElementTree.fromstring(response.data).find('Dial')
+        self.assertEqual(dial.attrib, {
+            'action': '/voice/dial-result', 'method': 'POST', 'timeout': '20',
+        })
+        self.assertEqual(dial.find('Number').text, '+15555550100')
+        self.assertEqual(dial.find('Number').attrib, {
+            'statusCallback': '/voice/dial-result', 'statusCallbackMethod': 'POST',
+            'statusCallbackEvent': 'completed',
+        })
+        path = '/voice/dial-result?value=a%2Bb&space=x%20y&repeat=1&repeat=2'
+        data = self.payloads()['/voice/dial-result']
+        answered = {**data, 'CallSid': 'answered', 'DialCallStatus': 'completed'}
+        self.assertEqual(post(path, answered).status_code, 200)
+        self.assertEqual(self.calls(), [])
+        for _ in range(2):
+            self.assertEqual(post(path, data).status_code, 200)
+        self.assertEqual(len(self.calls()), 1)
+        self.assertEqual(self.calls()[0]['follow_up_status'], 'disabled')
+        self.network.assert_not_called()
+
+    def test_wrong_configured_token_blocks_render_call_before_dial(self):
+        origin = 'https://missed-call-assistant.onrender.com'
+        self.app.config['TWILIO_WEBHOOK_BASE_URL'] = origin
+        path = '/voice/incoming'
+        data = self.payloads()[path]
+        headers = {'X-Twilio-Signature': signature(origin + path, data),
+                   'X-Forwarded-Proto': 'https', 'User-Agent': 'TwilioProxy/1.0'}
+        for token in ('wrong-live-token', TEST_TOKEN + ' ', '"' + TEST_TOKEN + '"'):
+            with self.subTest(token_case=('whitespace' if token.endswith(' ') else 'mismatch')):
+                self.app.config['TWILIO_AUTH_TOKEN'] = token
+                response = self.client.post(path, data=data, headers=headers,
+                                            base_url='http://internal:10000')
+                self.assertEqual(response.status_code, 403)
+                self.assertNotIn(b'<Dial', response.data)
+        self.assertEqual(self.calls(), [])
+        self.network.assert_not_called()
+
     def test_missing_credentials_fail_closed_even_in_testing_or_debug(self):
         self.app.config['DEBUG'] = True
         for key in ('TWILIO_AUTH_TOKEN', 'TWILIO_WEBHOOK_BASE_URL'):
