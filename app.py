@@ -1,4 +1,5 @@
 import os
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from flask import Flask
@@ -13,6 +14,7 @@ def create_app(test_config=None):
     app = Flask(__name__)
     app.config.from_mapping(
         BUSINESS_PHONE=os.getenv("BUSINESS_PHONE"),
+        BUSINESS_TIMEZONE=os.getenv("BUSINESS_TIMEZONE", "America/Phoenix"),
         DATABASE_PATH=os.getenv("DATABASE_PATH", "missed_calls.db"),
         ENABLE_DEV_ROUTES=os.getenv("ENABLE_DEV_ROUTES", "").lower() == "true",
         ENABLE_SMS_FOLLOWUP=os.getenv("ENABLE_SMS_FOLLOWUP", "false").strip().lower() == "true",
@@ -24,6 +26,8 @@ def create_app(test_config=None):
     )
     if test_config is not None:
         app.config.update(test_config)
+    # Reject invalid deployment configuration instead of silently showing wrong times.
+    ZoneInfo(app.config["BUSINESS_TIMEZONE"])
     with app.app_context():
         init_db()
     app.register_blueprint(production)

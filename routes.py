@@ -6,13 +6,22 @@ from database import get_calls
 from followup import record_missed_call
 from sms import SAFE_ERRORS
 from events import MISSED_STATUSES, event_data
+from timestamps import display_timestamp, twilio_event_time
 
 production = Blueprint("production", __name__)
 
 
 @production.route("/")
 def index():
-    calls = get_calls()
+    calls = []
+    for row in get_calls():
+        call = dict(row)
+        call['display_time'] = display_timestamp(
+            call['call_event_at'] or call['time_received'],
+            current_app.config['BUSINESS_TIMEZONE'],
+        )
+        call['time_label'] = 'Call ended' if call['call_event_at'] else 'Recorded'
+        calls.append(call)
     return render_template(
         "index.html",
         calls=calls,
@@ -69,7 +78,7 @@ def call_event():
         phone_number=phone_number,
         caller_name=caller_name,
         call_status=call_status,
-        external_call_id=external_call_id
+        external_call_id=external_call_id,
     )
 
     if call_id is None:
@@ -129,7 +138,8 @@ def provider_call_status():
         phone_number=phone_number,
         caller_name="Incoming Caller",
         call_status=call_status,
-        external_call_id=external_call_id
+        external_call_id=external_call_id,
+        call_event_at=twilio_event_time(request.form.get('Timestamp')),
     )
 
     if call_id is None:
@@ -195,6 +205,8 @@ def voice_dial_result():
             caller_name="Incoming Caller",
             call_status=dial_status,
             external_call_id=call_sid,
+            call_event_at=(twilio_event_time(request.form.get('Timestamp'))
+                           if not is_action else None),
         )
         # No phone numbers, SIDs, request bodies, or credentials in logs.
         current_app.logger.info(

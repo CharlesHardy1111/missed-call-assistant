@@ -233,6 +233,46 @@ Reference: [Twilio request validation](https://www.twilio.com/docs/usage/securit
 
 ## Tests
 
+### Timestamp storage and display
+
+Set `BUSINESS_TIMEZONE=America/Phoenix` in Render for the Arizona business
+(also the default). Use an IANA timezone such as `America/New_York` for another
+deployment. Invalid timezone configuration fails at startup rather than silently
+showing incorrect times. `tzdata` supplies timezone rules on Windows and on
+systems without an OS timezone database. No server `TZ` or fixed offset is needed.
+
+New `time_received` values are the MCA lead receipt/creation instant, serialized
+as timezone-aware ISO 8601 UTC with `+00:00`, seconds, and microseconds in SQLite
+TEXT. The additive nullable `call_event_at` TEXT column stores Twilio's terminal
+status-event time in the same UTC representation when its RFC 2822 `Timestamp`
+includes a timezone. Missing/invalid timestamps fall back to receipt time; they
+do not break voice handling. These are terminal-event times, not call start times.
+Dial's synchronous action does not provide this event timestamp. If it arrives
+first, the later Number status callback fills the missing event time once under
+the existing duplicate-check transaction; it does not recreate the lead or SMS
+attempt. Receipt time and an already populated event time remain unchanged on retries.
+
+The dashboard uses event time when available (label **Call ended**) and receipt
+time otherwise (label **Recorded**). Conversion to `BUSINESS_TIMEZONE` occurs
+only while rendering the HTML on the server. `<time datetime>` retains the UTC
+ISO value; visible text includes the IANA timezone and AM/PM. There is no date
+parsing or second timezone conversion in browser JavaScript, and no timestamp
+JSON API. Follow-up attempt/completion timestamps already use aware UTC.
+
+Historical `time_received` strings contain no timezone. They remain untouched
+and are explicitly labeled **legacy timestamp; timezone unknown**. Do not infer
+their timezone from Render's current settings or apply a blanket offset. To repair
+a historical row, first match its external call ID to the Twilio parent call and
+recover an authoritative event time. Back up the database before any approved
+production data correction. The timestamp fix does not repair unknown historical
+values or change existing forwarding, webhook authentication, or SMS configuration.
+
+After an approved deployment, keep SMS disabled and verify a new unanswered call:
+the local displayed date/time should match the terminal event in America/Phoenix,
+with one lead after both callbacks. An answered call should create no lead.
+The migration runs through the existing startup initialization on the configured
+database; no Twilio webhook URL change is required.
+
 Run `python -m unittest discover -s tests -v`. Tests use temporary SQLite files,
 including during app import, and make no Twilio requests. They cover missed and
 answered statuses, sequential duplicate callbacks across endpoints, validation,

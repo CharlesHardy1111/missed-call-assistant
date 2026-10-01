@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from contextlib import closing
 from flask import current_app, has_app_context
 from sms import DEFAULT_MESSAGE
+from timestamps import utc_now
 
 DB_NAME = "missed_calls.db"
 
@@ -51,6 +52,7 @@ def init_db():
 
         # Additive lifecycle migration; old pending rows must never become a send backlog.
         lifecycle_columns = {
+            "call_event_at": "TEXT",
             "follow_up_attempted_at": "TEXT",
             "follow_up_completed_at": "TEXT",
             "follow_up_error": "TEXT",
@@ -98,13 +100,12 @@ def add_missed_call(
     call_status="no-answer",
     external_call_id=None,
     deduplicate=False,
+    call_event_at=None,
 ):
     """Insert a lead; return None when deduplication skips an existing call ID."""
     follow_up_message = DEFAULT_MESSAGE
 
-    time_received = datetime.now().strftime(
-        "%b %d, %Y %I:%M %p"
-    )
+    time_received = utc_now()
 
     # Serialize check + insert for the two independently delivered voice callbacks.
     # BEGIN IMMEDIATE works across Gunicorn workers and needs no schema migration.
@@ -117,6 +118,14 @@ def add_missed_call(
                 (external_call_id,),
             )
             if cursor.fetchone() is not None:
+                if call_event_at is not None:
+                    # A Number callback may arrive after Dial's action. Enrich the
+                    # event time once without changing receipt time or follow-up.
+                    cursor.execute(
+                        "UPDATE missed_calls SET call_event_at = ? "
+                        "WHERE external_call_id = ? AND call_event_at IS NULL",
+                        (call_event_at, external_call_id),
+                    )
                 return None
 
         cursor.execute("""
@@ -128,9 +137,10 @@ def add_missed_call(
                 follow_up_status,
                 follow_up_message,
                 call_status,
-                external_call_id
+                external_call_id,
+                call_event_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             phone_number,
             caller_name,
@@ -139,7 +149,8 @@ def add_missed_call(
             "pending",
             follow_up_message,
             call_status,
-            external_call_id
+            external_call_id,
+            call_event_at
         ))
 
         return cursor.lastrowid
