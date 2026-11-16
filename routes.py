@@ -1,18 +1,21 @@
 from xml.sax.saxutils import escape
 
-from flask import Blueprint, Response, current_app, jsonify, render_template, request
+from flask import Blueprint, Response, current_app, jsonify, render_template, request, redirect, url_for
 
 from database import get_calls
 from followup import record_missed_call
 from sms import SAFE_ERRORS
 from events import MISSED_STATUSES, event_data
 from timestamps import display_timestamp, twilio_event_time
+from businesses import has_businesses, bind_incoming, bound_call
 
 production = Blueprint("production", __name__)
 
 
 @production.route("/")
 def index():
+    if has_businesses():
+        return redirect(url_for('inbox.home'))
     calls = []
     for row in get_calls():
         call = dict(row)
@@ -31,6 +34,8 @@ def index():
 
 @production.route("/call-event", methods=["POST"])
 def call_event():
+    if has_businesses():
+        return Response('Use the account-bound voice callbacks.', status=409)
 
     data = event_data()
 
@@ -109,6 +114,11 @@ def provider_call_status():
     ).lower()
 
     external_call_id = request.form.get("ParentCallSid") or request.form.get("CallSid")
+    binding = bound_call(external_call_id) if has_businesses() else None
+    if has_businesses() and binding is None:
+        return Response('Unknown call.', status=404)
+    if binding is not None:
+        phone_number = binding['caller']
 
     status_map = {
         "completed": "answered",
@@ -140,6 +150,7 @@ def provider_call_status():
         call_status=call_status,
         external_call_id=external_call_id,
         call_event_at=twilio_event_time(request.form.get('Timestamp')),
+        business_id=binding['business_id'] if binding is not None else None,
     )
 
     if call_id is None:
@@ -162,13 +173,20 @@ def provider_call_status():
 @production.route("/voice/incoming", methods=["POST"])
 def voice_incoming():
 
-    if not current_app.config["BUSINESS_PHONE"]:
+    destination = current_app.config['BUSINESS_PHONE']
+    if has_businesses():
+        business = bind_incoming(request.form)
+        if business is None:
+            return Response('Unknown business number or call.', status=404)
+        destination = business['forwarding_phone']
+
+    if not destination:
         return Response("Business phone is not configured.", status=503)
 
     twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Dial action="/voice/dial-result" method="POST" timeout="20">
-        <Number statusCallback="/voice/dial-result" statusCallbackMethod="POST" statusCallbackEvent="completed">{escape(current_app.config["BUSINESS_PHONE"] or "")}</Number>
+        <Number statusCallback="/voice/dial-result" statusCallbackMethod="POST" statusCallbackEvent="completed">{escape(destination or "")}</Number>
     </Dial>
 </Response>"""
 
@@ -190,6 +208,11 @@ def voice_dial_result():
         "DialCallStatus" if is_action else "CallStatus"
     ) or "").strip().lower()
     call_sid = request.form.get("CallSid" if is_action else "ParentCallSid")
+    binding = bound_call(call_sid) if has_businesses() else None
+    if has_businesses() and binding is None:
+        return Response('Unknown call.', status=404)
+    if binding is not None:
+        phone_number = binding['caller']
     if not is_action and dial_status in MISSED_STATUSES and not call_sid:
         current_app.logger.warning("Dial status callback rejected: missing parent ID")
         return Response("ParentCallSid is required for a dial status callback.", status=400)
@@ -207,6 +230,7 @@ def voice_dial_result():
             external_call_id=call_sid,
             call_event_at=(twilio_event_time(request.form.get('Timestamp'))
                            if not is_action else None),
+            business_id=binding['business_id'] if binding is not None else None,
         )
         # No phone numbers, SIDs, request bodies, or credentials in logs.
         current_app.logger.info(

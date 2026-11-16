@@ -1,0 +1,19 @@
+{% extends 'inbox_base.html' %}
+{% block content %}<a href="{{ url_for('inbox.home') }}">← Inbox</a><h2>{{ lead['phone_number'] }}</h2>
+<p>{{ lead['status']|capitalize }}</p>
+{% include 'lead_card.html' %}
+<form method="post"><input type="hidden" name="csrf" value="{{ csrf }}">
+<button name="action" value="read">Mark read</button>
+{% if lead['status']=='closed' %}<button name="action" value="reopen">Reopen</button>{% else %}<button name="action" value="close">Close conversation</button>{% endif %}</form>
+{% if not config.ENABLE_SMS_FOLLOWUP %}<p class="notice">Text sending is disabled. Replies are saved as not sent.</p>{% endif %}
+{% if lead['opted_out'] %}<p class="notice">This customer has opted out of texts.</p>{% endif %}
+{% for call in calls %}<p class="muted">Missed call · {{ call['time'] }} · {{ call['call_status'] }}</p>{% endfor %}
+{% for message in messages %}<article class="{{ message['direction'] }}">
+<strong>{{ 'Customer' if message['direction']=='inbound' else ('Automatic follow-up' if message['kind']=='recovery' else ('Clarification' if message['kind']=='clarification' else 'You')) }}</strong>
+<p class="message">{{ message['body'] }}</p><small>{{ message['time'] }} · {{ {'sent':'Sent (delivery unconfirmed)','disabled':'Not sent — sending disabled','not_attempted':'Not sent','sending':'Sending / outcome unconfirmed','failed':'Failed','received':'Received','pending':'Not attempted / pending'}.get(message['status'],message['status']) }}</small>
+{% if message['error'] %}<p>{{ errors.get(message['error'],'Follow-up needs review.') }}</p>{% endif %}
+</article>{% else %}<p>No messages yet.</p>{% endfor %}
+<section><h3>Reply</h3>{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+<form method="post"><input type="hidden" name="csrf" value="{{ csrf }}"><input type="hidden" name="request_key" value="{{ request_key }}"><input type="hidden" name="action" value="reply">
+<label for="body">Message</label><textarea id="body" name="body" maxlength="1600" required></textarea>
+<button>{{ 'Send reply' if config.ENABLE_SMS_FOLLOWUP else 'Save unsent reply' }}</button></form></section>{% endblock %}

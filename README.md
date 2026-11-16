@@ -1,5 +1,13 @@
 # Missed Call Assistant
 
+Business accounts, number mapping, and the private two-way inbox are described in
+[ONBOARDING.md](ONBOARDING.md). Provisioning the first account switches intake to
+explicit number mappings and protects the dashboard with login. All outbound SMS,
+including manual replies, remains controlled by `ENABLE_SMS_FOLLOWUP=false`.
+Progressive service details and bounded SMS clarifications are described in
+[LEAD_CAPTURE.md](LEAD_CAPTURE.md). Automatic questions default off via
+`ENABLE_PROGRESSIVE_CAPTURE=false`; passive lead capture still works.
+
 Flask dashboard and inbound Twilio voice callbacks backed by SQLite. Missed calls
 create a lead and run an SMS follow-up workflow. **Real SMS is disabled by default**
 and must not be enabled without explicit approval.
@@ -82,6 +90,8 @@ The default message is:
 | `TWILIO_SMS_FROM` | Empty; SMS-capable Twilio sender in E.164 format |
 
 `TWILIO_SMS_FROM` is separate from `BUSINESS_PHONE`; do not change the latter.
+For provisioned business accounts, the account's dedicated MCA number replaces
+`TWILIO_SMS_FROM` as sender; that variable remains the legacy-mode fallback only.
 No credentials are needed for the automated or disabled-mode manual tests.
 The simulator never sends, even if the feature flag is true. Production events
 without a stable ID are also not sent, because retries cannot be deduplicated safely.
@@ -306,22 +316,22 @@ and [Number status callbacks](https://www.twilio.com/docs/voice/twiml/number#sta
 
 ## Audit findings and remaining risks
 
-- The dashboard still has no authentication and displays caller information.
-  Access control needs a separate rollout before exposing sensitive call data.
+- The legacy dashboard remains public only while no business accounts exist.
+  Provisioning the first account redirects it to the authenticated private inbox;
+  historical unassigned rows are retained but never shown to a business account.
 - Signatures authenticate payloads, but do not provide a timestamp or replay
   expiration. Existing call-ID deduplication and persisted send claims prevent
   duplicate follow-ups for identified calls; retain persistent database storage.
 - HTTPS, secret storage/rotation, and rate limiting remain operational responsibilities.
-  Anyone possessing the account auth token can sign a request. Dashboard access
-  control and inbound SMS/opt-out handling are separate work.
+  Anyone possessing the account auth token can sign a request. Business inboxes
+  require authenticated sessions; inbound SMS is signed and mapped by destination.
 - All production entry points now use the serialized duplicate check and follow-up
   claim. Direct database writers can bypass this contract; existing duplicates are
   not deleted. Events without IDs preserve record creation but cannot send SMS.
 - SQLite durability depends on the deployed disk. This change does not provision
   storage, migrate to PostgreSQL, or verify the live Render configuration.
-- Existing policy text describes STOP/HELP capabilities. Inbound SMS/HELP handling
-  is not implemented by this milestone; confirm opt-out behavior and policy wording
-  before launching messaging.
+- Inbound STOP/START handling is implemented. Custom HELP replies are not; confirm
+  Twilio's opt-out/help behavior and policy wording before launching messaging.
 - Caller phone/SID debug prints were removed. `.env` variants, virtual environments,
   databases and SQLite sidecars are ignored. `.env.example` contains a dummy number.
   If credentials were ever exposed elsewhere, ignoring files does not rotate them.
