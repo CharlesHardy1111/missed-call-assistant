@@ -1,4 +1,5 @@
 import os
+from datetime import timedelta
 from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
@@ -14,10 +15,17 @@ def create_app(test_config=None):
     app = Flask(__name__)
     app.config.from_mapping(
         BUSINESS_PHONE=os.getenv("BUSINESS_PHONE"),
+        SECRET_KEY=os.getenv('SECRET_KEY'),
+        SESSION_COOKIE_SECURE=True,
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE='Lax',
+        PERMANENT_SESSION_LIFETIME=timedelta(hours=8),
+        MAX_CONTENT_LENGTH=64 * 1024,
         BUSINESS_TIMEZONE=os.getenv("BUSINESS_TIMEZONE", "America/Phoenix"),
         DATABASE_PATH=os.getenv("DATABASE_PATH", "missed_calls.db"),
         ENABLE_DEV_ROUTES=os.getenv("ENABLE_DEV_ROUTES", "").lower() == "true",
         ENABLE_SMS_FOLLOWUP=os.getenv("ENABLE_SMS_FOLLOWUP", "false").strip().lower() == "true",
+        ENABLE_PROGRESSIVE_CAPTURE=os.getenv('ENABLE_PROGRESSIVE_CAPTURE', 'false').strip().lower() == 'true',
         TWILIO_ACCOUNT_SID=os.getenv("TWILIO_ACCOUNT_SID", ""),
         TWILIO_AUTH_TOKEN=os.getenv("TWILIO_AUTH_TOKEN", ""),
         TWILIO_SMS_FROM=os.getenv("TWILIO_SMS_FROM", ""),
@@ -31,6 +39,9 @@ def create_app(test_config=None):
     with app.app_context():
         init_db()
     app.register_blueprint(production)
+    from inbox import inbox, register_account_cli
+    app.register_blueprint(inbox)
+    register_account_cli(app)
     app.before_request(validate_webhooks)
     if app.config["ENABLE_DEV_ROUTES"]:
         from development import development

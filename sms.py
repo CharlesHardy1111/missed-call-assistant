@@ -11,6 +11,7 @@ from flask import current_app
 
 DEFAULT_MESSAGE = "Hi, sorry we missed your call. We'll get back to you shortly. How can we help?"
 SAFE_ERRORS = {
+    "recipient_opted_out": "This customer has opted out of texts.",
     "configuration_missing": "SMS credentials or sender are missing or invalid.",
     "invalid_recipient": "The caller number is not a valid SMS destination.",
     "provider_rejected": "Twilio rejected the send request. Check the Twilio console.",
@@ -44,7 +45,7 @@ def _error_code(value):
     return value if re.fullmatch(r"[0-9]{4,6}", value) else None
 
 
-def send_sms(phone_number, message):
+def send_sms(phone_number, message, *, sender=None):
     """'sent' means Twilio accepted the API request, not handset delivery."""
     config = current_app.config
     # Defense in depth: even a direct transport invocation obeys the switch.
@@ -52,7 +53,7 @@ def send_sms(phone_number, message):
         return SendResult("disabled")
     sid = config.get("TWILIO_ACCOUNT_SID") or ""
     token = config.get("TWILIO_AUTH_TOKEN") or ""
-    sender = config.get("TWILIO_SMS_FROM") or ""
+    sender = sender if sender is not None else (config.get("TWILIO_SMS_FROM") or "")
     if not (re.fullmatch(r"AC[0-9a-fA-F]{32}", sid) and token
             and re.fullmatch(r"\+[1-9][0-9]{7,14}", sender)):
         return SendResult("failed", error="configuration_missing")

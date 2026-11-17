@@ -1,0 +1,13 @@
+{% extends 'inbox_base.html' %}
+{% block content %}<p>Missed calls become conversations. Pick up where your customer left off.</p>
+{% if not config.ENABLE_SMS_FOLLOWUP %}<p class="notice">Text sending is disabled. Incoming messages still appear here.</p>{% endif %}
+<h2>Inbox</h2>
+{% for lead in leads %}<article>
+<h3><a href="{{ url_for('inbox.detail',conversation_id=lead['id']) }}">{{ lead['phone_number'] }}</a> {% if lead['unread'] %}<small>New activity</small>{% endif %}</h3>
+<p>{{ lead['status']|capitalize }} · {% if lead['missed_at'] %}Missed call{% else %}Conversation started{% endif %}: {{ lead['time'] }}</p>
+<p class="message"><strong>Request:</strong> {{ lead['card']['summary'] }}</p>
+<p><strong>Urgency:</strong> {{ lead['card']['fields']['urgency']['value'] or 'Unknown' }} · {{ lead['card']['completeness']|capitalize }}</p>
+<p><strong>Next action:</strong> {{ lead['card']['next_action'] }}</p>
+<p class="message">{{ (lead['latest'] or 'No messages yet.')[:180] }}</p>
+</article>{% else %}<section>No leads yet. New missed calls and customer messages will appear here.</section>{% endfor %}
+{% endblock %}

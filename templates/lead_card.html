@@ -1,0 +1,12 @@
+<section aria-label="Service lead">
+    <h3>Service lead · {{ card['completeness']|capitalize }}</h3>
+    <p class="message"><strong>Request:</strong> {{ card['summary'] }}</p>
+    {% for field, label in [('customer_name','Customer name'),('location','Location'),('urgency','Urgency'),('callback','Callback number')] %}
+    {% set fact = card['fields'][field] %}
+    <p><strong>{{ label }}:</strong> {{ fact['value'] or 'Unknown' }}
+        <small>({{ {'candidate':'caller ID — not confirmed','customer_reported':'customer stated','confirmed':'confirmed by customer','unknown':'unknown','declined':'not provided'}.get(fact['state'], 'unknown') }})</small></p>
+    {% endfor %}
+    <p><strong>Missing:</strong> {{ card['missing']|join(', ') if card['missing'] else 'Basic details captured' }}</p>
+    <p><strong>Next action:</strong> {{ card['next_action'] }}</p>
+    <small>Source: {{ card['source'] }} · {{ card['consent'] }}. Customer statements are not independently verified.</small>
+</section>

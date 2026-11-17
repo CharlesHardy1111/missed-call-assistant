@@ -1,0 +1,7 @@
+{% extends 'inbox_base.html' %}
+{% block content %}<section><h2>Sign in to your inbox</h2>
+{% if error %}<p class="error" role="alert">{{ error }}</p>{% endif %}
+<form method="post"><input type="hidden" name="csrf" value="{{ csrf }}">
+<label for="login">Account</label><input id="login" name="login" required autocomplete="username">
+<label for="password">Password</label><input id="password" name="password" type="password" required autocomplete="current-password">
+<p><button>Sign in</button></p></form></section>{% endblock %}

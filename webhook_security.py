@@ -7,6 +7,7 @@ from flask import Response, current_app, request
 from twilio.request_validator import RequestValidator
 
 TWILIO_ENDPOINTS = frozenset({
+    "inbox.inbound_sms",
     "production.voice_incoming",
     "production.voice_dial_result",
     "production.provider_call_status",
