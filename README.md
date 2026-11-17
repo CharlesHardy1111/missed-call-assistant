@@ -340,3 +340,19 @@ and [Number status callbacks](https://www.twilio.com/docs/voice/twiml/number#sta
   versions from the original requirements to avoid unrelated upgrades.
 - Live Render/Gunicorn and real Twilio calls still need a deployment smoke test.
   The local regression suite verifies the Flask entry point and callback contracts.
+
+## Offline agent foundation
+
+Implementation 001 is documented in [AGENT_FOUNDATION.md](AGENT_FOUNDATION.md).
+Run `python agent_demo.py` for a disposable, synthetic conversation demo with no
+provider calls. This module is not connected to the production voice or SMS routes.
+The isolated [voice protocol harness](VOICE_STAGING.md) runs with
+`python agent_demo.py --voice`; it does not open a live voice connection.
+The opt-in ASGI application in `voice_host.py` is tested with simulated transports
+and is not imported by the deployed Flask application.
+
+For a separate, public **synthetic review** service, use `gunicorn review_app:app
+--workers 1 --timeout 120` and `/health` as its health check. This renders four
+fixed scenarios using disposable sample databases, never production customer data.
+It needs no credentials or persistent disk. Keep both SMS flags false and deploy
+the development branch to a separate free service; leave production `app:app` alone.

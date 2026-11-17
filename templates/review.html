@@ -1,0 +1,26 @@
+{% extends "inbox_base.html" %}
+{% block title %}MCA · Agent foundation review{% endblock %}
+{% block content %}
+<h2>Agent foundation review</h2>
+<p class="notice"><strong>Simulation only.</strong> These are fictional conversations run through the current engine.
+No live AI, calls, SMS, appointments, or transfers. No production customer data.</p>
+<nav aria-label="Review scenarios">
+{% for name, scenario in scenarios.items() %}
+<p><a href="{{ url_for('review', name=name) }}" {% if name == selected %}aria-current="page"{% endif %}>{{ scenario[0] }}</a></p>
+{% endfor %}
+</nav>
+<h2>{{ demo['title'] }}</h2>
+{% for turn in demo['timeline'] %}
+<article class="inbound"><strong>Customer</strong><p class="message">{{ turn['customer'] }}</p></article>
+<article class="outbound"><strong>MCA</strong><p class="message">{{ turn['assistant'] }}</p></article>
+{% endfor %}
+{% if selected == 'partial' %}<p class="notice">The customer disconnected. Partial details remain saved for owner review.</p>{% endif %}
+{% if selected == 'interrupted' %}<p class="notice">Speech was interrupted. Automatic intake stopped; no unheard answer was assumed confirmed.</p>{% endif %}
+<p><strong>Outcome:</strong> {{ demo['outcome']['state']['status']|replace('_', ' ') }} ·
+<strong>Owner inbox:</strong> {{ 'unread activity' if demo['owner_unread'] else 'no new activity' }}</p>
+{% include "lead_card.html" %}
+<section><h3>What still needs implementation</h3>
+<p>Live speech and model integration, confirmed calendar booking, actual human transfer,
+and operational testing. The current interpreter is deterministic.</p>
+<p><a href="{{ url_for('data') }}">View structured sample outcomes (JSON)</a></p></section>
+{% endblock %}
